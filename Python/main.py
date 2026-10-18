@@ -1,5 +1,7 @@
-import json, psycopg2
+import json
+import psycopg2
 from psycopg2.extras import DictCursor
+from xml.etree.ElementTree import Element, tostring
 
 class DataReader:
     @staticmethod
@@ -36,22 +38,18 @@ class Database:
         with psycopg2.connect(**self.db_config) as conn:
             with conn.cursor(cursor_factory=DictCursor) as cursor:
                 for room in rooms:
-                    sql = f"INSERT INTO rooms(room_id, room) VALUES (%s, %s)"
+                    sql = "INSERT INTO rooms(room_id, room) VALUES (%s, %s) ON CONFLICT (room_id) DO NOTHING"
                     cursor.execute(sql, (room['id'], room['name']))
-                    conn.commit()
                 for student in students:
-                    sql = f"INSERT INTO students(birthday, student_id, name, room_id, sex) VALUES (%s, %s, %s, %s, %s)"
+                    sql = "INSERT INTO students(birthday, student_id, name, room_id, sex) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (student_id) DO NOTHING"
                     cursor.execute(sql, (student['birthday'], student['id'], student['name'], student['room'],
                                    student['sex']))
-                    conn.commit()
 
     def add_indexes(self):
         with psycopg2.connect(**self.db_config) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_room_id ON students(room_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_birthday ON students(birthday);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_room_sex ON students(room_id, sex);")
-                conn.commit()
 
 class Query:
     @staticmethod
@@ -62,9 +60,24 @@ class Query:
 
 class ExportResult:
     @staticmethod
-    def export_result(query_result, query_name):
+    def export_json(query_result, query_name):
         with open(query_name, 'w') as json_file:
             json.dump(query_result, json_file, indent=4)
+
+    @staticmethod
+    def export_xml(query_result, query_name):
+        root_node = Element('result')
+        for row in query_result:
+            row_node = Element('row')
+            for key, value in row.items():
+                child_node = Element(key)
+                child_node.text = str(value)
+                row_node.append(child_node)
+            root_node.append(row_node)
+        xml_data = tostring(root_node, encoding='unicode')
+        with open(query_name, 'w', encoding='utf-8') as xml_file:
+            xml_file.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+            xml_file.write(xml_data)
 
 db_config = {
     "host": "localhost",
@@ -81,7 +94,7 @@ query_1 = """
             GROUP BY room;
         """
 query_2 = """
-        SELECT room, ROUND(AVG(EXTRACT(YEAR FROM AGE(birthday)))) AS avg_age
+        SELECT room, ROUND(AVG(EXTRACT(YEAR FROM AGE(birthday))))::float AS avg_age
         FROM rooms
         INNER JOIN students USING(room_id)
         GROUP BY room
@@ -98,8 +111,9 @@ query_3 = """
 		    INNER JOIN students USING(room_id)
 	    GROUP BY room
 	    )
-        SELECT room, min_age, max_age, 
-	    max_age - min_age AS difference
+        SELECT room, min_age::float, 
+        max_age::float, 
+	    (max_age - min_age)::float AS difference
         FROM max_min_age
         ORDER BY difference DESC
         LIMIT 5;
@@ -118,15 +132,24 @@ if __name__ == "__main__":
     students_data = DataReader.load_json("students.json")
     db = Database(db_config)
     db.setup_tables()
-    #db.insert_data(rooms_data, students_data)
+    db.insert_data(rooms_data, students_data)
     db.add_indexes()
+    user_format = ''
+    while user_format not in ('xml', 'json'):
+        user_format = input('Choose format (xml or json): ')
     with psycopg2.connect(**db_config) as conn:
         with conn.cursor(cursor_factory=DictCursor) as cursor:
             res_1 = Query.query_result(cursor, query_1)
-            ExportResult.export_result(res_1, 'query_1.json')
             res_2 = Query.query_result(cursor, query_2)
-            ExportResult.export_result(res_2, 'query_2.json')
             res_3 = Query.query_result(cursor, query_3)
-            ExportResult.export_result(res_3, 'query_3.json')
             res_4 = Query.query_result(cursor, query_4)
-            ExportResult.export_result(res_4, 'query_4.json')
+    if user_format == 'xml':
+        ExportResult.export_xml(res_1, 'query_1.xml')
+        ExportResult.export_xml(res_2, 'query_2.xml')
+        ExportResult.export_xml(res_3, 'query_3.xml')
+        ExportResult.export_xml(res_4, 'query_4.xml')
+    else:
+        ExportResult.export_json(res_1, 'query_1.json')
+        ExportResult.export_json(res_2, 'query_2.json')
+        ExportResult.export_json(res_3, 'query_3.json')
+        ExportResult.export_json(res_4, 'query_4.json')
